@@ -65,30 +65,14 @@ RUN git clone --single-branch -b pdok-7-6-3-patch-1 https://github.com/pdok/maps
 RUN mkdir /usr/local/src/mapserver/build && \
     cd /usr/local/src/mapserver/build && \
     cmake ../ \
-        -DWITH_PROJ=ON \
         -DWITH_KML=OFF \
         -DWITH_SOS=OFF \
-        -DWITH_WMS=ON \
-        -DWITH_FRIBIDI=ON \
-        -DWITH_HARFBUZZ=ON \
-        -DWITH_ICONV=ON \
-        -DWITH_CAIRO=ON \
         -DWITH_SVGCAIRO=OFF \
         -DWITH_RSVG=ON \
         -DWITH_MYSQL=OFF \
-        -DWITH_FCGI=ON \
-        -DWITH_GEOS=ON \
-        -DWITH_POSTGIS=ON \
-        -DWITH_GDAL=ON \
-        -DWITH_OGR=ON \
-        -DWITH_CURL=ON \
         -DWITH_CLIENT_WMS=ON \
         -DWITH_CLIENT_WFS=ON \
-        -DWITH_WFS=ON \
-        -DWITH_WCS=ON \
-        -DWITH_LIBXML2=ON \
         -DWITH_THREAD_SAFETY=OFF \
-        -DWITH_GIF=ON \
         -DWITH_PYTHON=OFF \
         -DWITH_PHP=OFF \
         -DWITH_PERL=OFF \
@@ -98,8 +82,6 @@ RUN mkdir /usr/local/src/mapserver/build && \
         -DWITH_ORACLESPATIAL=OFF \
         -DWITH_ORACLE_PLUGIN=OFF \
         -DWITH_MSSQL2008=OFF \
-        -DWITH_SDE_PLUGIN=OFF \
-        -DWITH_SDE=OFF \
         -DWITH_EXEMPI=ON \
         -DWITH_XMLMAPFILE=ON \
         -DWITH_V8=OFF \
