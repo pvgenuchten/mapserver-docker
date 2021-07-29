@@ -12,7 +12,13 @@ RUN apt-get -y update && \
         cmake \
         g++ \
         git \
+        libfreetype6-dev \
+        libglib2.0-dev \
         libcairo2-dev \
+        libtiff5-dev \
+        sqlite3 \
+        libsqlite3-dev \
+        libwebp-dev \
         locales \
         make \
         patch \
@@ -20,12 +26,13 @@ RUN apt-get -y update && \
         protobuf-compiler \
         protobuf-c-compiler \
         software-properties-common \
+        curl \
         wget && \
     rm -rf /var/lib/apt/lists/*
 
 RUN update-locale LANG=C.UTF-8
 
-ENV HARFBUZZ_VERSION 2.8.1
+ENV HARFBUZZ_VERSION 2.8.2
 
 RUN cd /tmp && \
         wget https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz && \
@@ -35,6 +42,29 @@ RUN cd /tmp && \
         make && \
         make install && \
         ldconfig
+
+ENV PROJ_VERSION="8.1.0"
+
+ENV GDAL_VERSION="3.3.1"
+
+RUN wget https://github.com/OSGeo/PROJ/releases/download/${PROJ_VERSION}/proj-${PROJ_VERSION}.tar.gz
+
+RUN wget https://github.com/OSGeo/gdal/releases/download/v${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz
+
+RUN mkdir /build
+
+# Build proj
+RUN tar xzvf proj-${PROJ_VERSION}.tar.gz && \
+    cd /proj-${PROJ_VERSION} && \
+    TIFF_LIBS="-L/build/lib -ltiff" TIFF_CFLAGS="-O3 -m64 -I/build/include" ./configure --without-curl --prefix=/build && make -j$(nproc) && make install
+
+# Build gdal
+RUN tar xzvf gdal-${GDAL_VERSION}.tar.gz && \
+    cd /gdal-${GDAL_VERSION} && \
+    ./configure --prefix=/build/gdal --with-proj=/build LDFLAGS="-L/build/lib" CPPFLAGS="-I/build/include" \ 
+    --prefix=/build --with-threads=yes --with-webp --with-libtiff=internal --disable-debug --disable-static \
+    --with-geotiff=internal --with-jpeg12 --with-gif=internal --with-png=internal --with-libz=internal --with-curl=/build/bin/curl-config && \ 
+    make -j$(nproc) && make install
 
 RUN apt-get -y update && \
     apt-get install -y --no-install-recommends \
@@ -49,9 +79,7 @@ RUN apt-get -y update && \
         libjpeg-dev \
         libexempi-dev \
         libfcgi-dev \
-        libgdal-dev \
         libgeos-dev \
-        libproj-dev \
         librsvg2-dev \
         libprotobuf-dev \
         libprotobuf-c-dev \
@@ -110,7 +138,10 @@ RUN mkdir /usr/local/src/mapserver/build && \
         -DWITH_POINT_Z_M=ON \
         -DWITH_GENERIC_NINT=OFF \
         -DWITH_PROTOBUFC=ON \
-        -DCMAKE_PREFIX_PATH=/opt/gdal && \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/build:/build/proj:/usr/local:/opt -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DPROJ_INCLUDE_DIR=/build/include -DPROJ_LIBRARY=/build/lib/libproj.so \ 
+        -DGDAL_INCLUDE_DIR=/build/include -DGDAL_LIBRARY=/build/lib/libgdal.so && \ 
     make && \
     make install && \
     ldconfig
@@ -120,9 +151,11 @@ LABEL maintainer="PDOK dev <https://github.com/PDOK/mapserver-docker/issues>"
 
 ENV DEBIAN_FRONTEND noninteractive
 ENV TZ Europe/Amsterdam
+ENV PATH="/build/bin:/build/lib:${PATH}"
 
-COPY --from=0 /usr/local/bin /usr/local/bin
-COPY --from=0 /usr/local/lib /usr/local/lib
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /usr/local/lib /usr/local/lib
+COPY --from=builder /build /build
 
 RUN apt-get -y update && \
     apt-get install -y --no-install-recommends \
@@ -133,10 +166,8 @@ RUN apt-get -y update && \
         libjpeg62-turbo \
         libfcgi0ldbl \
         libfribidi0 \
-        libgdal28 \
         libgeos-c1v5 \
         libglib2.0-0 \
-        libproj19    \
         libxml2 \
         libxslt1.1 \
         libexempi8 \
@@ -145,10 +176,19 @@ RUN apt-get -y update && \
         librsvg2-2 \
         libprotobuf23 \
         libprotobuf-c1 \
+        libcurl4-gnutls-dev \
         gettext-base \
         wget \
         gnupg && \
     rm -rf /var/lib/apt/lists/*
+
+RUN wget https://cdn.proj.org/nl_nsgi_nlgeo2018.tif -O /build/share/proj/nl_nsgi_nlgeo2018.tif
+RUN wget https://cdn.proj.org/nl_nsgi_rdtrans2018.tif -O /build/share/proj/nl_nsgi_rdtrans2018.tif
+
+RUN \
+    wget https://github.com/OSGeo/proj-datumgrid/releases/download/1.8/proj-datumgrid-1.8.tar.gz \
+    && tar xzvf proj-datumgrid-1.8.tar.gz -C /build/share/proj \
+    && rm -f *.tar.gz
 
 COPY etc/lighttpd.conf /lighttpd.conf
 COPY etc/filter-map.lua /filter-map.lua
