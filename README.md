@@ -1,165 +1,118 @@
 # Mapserver docker
 
-[![GitHub
-license](https://img.shields.io/github/license/PDOK/mapserver-docker)](https://github.com/PDOK/mapserver-docker/blob/master/LICENSE)
-[![GitHub
-release](https://img.shields.io/github/release/PDOK/mapserver-docker.svg)](https://github.com/PDOK/mapserver-docker/releases)
-[![Docker
-Pulls](https://img.shields.io/docker/pulls/pdok/mapserver.svg)](https://hub.docker.com/r/pdok/mapserver)
-
-## TL;DR
-
-```docker
-docker build -t pdok/mapserver .
-docker run -e MS_MAPFILE=/srv/data/example.map --rm -d \
-            -p 80:80 --name mapserver-example -v `pwd`/example:/srv/data pdok/mapserver
-
-docker stop mapserver-example
-```
-
 ## Introduction
 
-This project aims to fulfill two needs:
+The project is a fork from [PDOK/mapserver-docker](https://github.com/PDOK/mapserver-docker), read more about the capabilities at their [README.md](https://github.com/PDOK/lighttpd-docker/blob/master/README.md).
 
-1. create [OGC services](http://www.opengeospatial.org/standards) that are
-   deployable on a scalable infrastructure.
-2. create a useable [Docker](https://www.docker.com) base image.
+In `26-07-2022`, PDOK implements: debian-oldstable (`debian-buster`), gdal `2.4.0` and libproj `5.2.0-1`
 
-Fulfilling the first need the main purpose is to create an Docker base image
-that can be run on a platform like [Kubernetes](https://kubernetes.io/).
+This repo adds the following aspects:
 
-Regarding the second need, finding a usable
-[Mapserver](https://github.com/mapserver/mapserver) Docker image is a challenge.
-Most images expose the &map=... QUERY_STRING in the GetCapabilities, don't run
-in FastCGI and are based on Apache.
+- add favicon.ico, index.html and robots.txt
+- ability to select a mapfile via a path variable
+- default symbols and template file
 
-## What will it do
+mapfiles should be placed in a (mounted) folder `/srv/data`
+run local as:
 
-It will create an Mapserver application run with Lighttpd in which the map=...
-QUERY_STRING 'issue' is 'fixed'. This means that the MAP query parameter is
-removed from the QUERY_STRING.
-
-The included EPSG file containing the projection parameters only contains a
-small set of available EPSG code, namely the once used by our organization. If
-one wants to use additional EPSG projections one can overwrite this file.
-
-## Docker image
-
-The Docker image contains 2 stages:
-
-1. builder
-2. service
-
-### builder
-
-The builder stage compiles Mapserver. The Dockerfile contains all the available
-Mapserver build option explicitly, so it is clear which options are enabled and
-disabled.
-
-### service
-
-The service stage copies the Mapserver application, build in the first stage to
-the service stage, and configures Lighttpd
-
-## Usage
-
-### Build
-
-```docker
-docker build -t pdok/mapserver .
+```bash
+docker build . -t isric/mapserver-core
+docker run -p 8080:8080  -v `pwd`/example:/srv/data isric/mapserver-core
 ```
 
-For a specific Dutch version which includes a specific (and smaller) epsg file
-and necessary grid corrections files.
+2 env variables: `ENV LIGHT_CONF_DIR` and `ENV LIGHT_ROOT_DIR`, can be used to define folder options on `lighttpd`:
 
-```docker
-docker build -t pdok/mapserver:nl -f Dockerfile.NL .
+- `ENV LIGHT_CONF_DIR`: Folder with `lighttpd.conf`, lua scripts and templates e.g: "/opt/lighttpd".
+- `ENV LIGHT_ROOT_DIR`: Lightttpd document root folder, data folder, e.g: "/srv/data"
+
+Mapfile parsing errors do not end up in logs.
+
+Test your mapfile by entering the pod and use:
+
+```bash
+/usr/local/bin/shp2img -m /srv/data/example.map -l example -o output.png
 ```
 
-### Run
+Core image implements the following debug:
 
-This image can be run straight from the CLI. A  volume needs to be mounted on
-the container directory /srv/data. The mounted volume needs to contain a
-mapserver *.map file that matches the MS_MAPFILE env.
+```bash
+#mapserver
+ENV DEBUG 2
+ENV MS_DEBUGLEVEL 4
+ENV MS_ERRORFILE stderr
 
-```docker
-docker run -e MS_MAPFILE=/srv/data/example.map --rm -d \
-           -p 80:80 --name mapserver-example -v `pwd`/example:/srv/data pdok/mapserver
+# light
+ENV MIN_PROCS 1
+ENV MAX_PROCS 3
+ENV MAX_LOAD_PER_PROC 4
+ENV IDLE_TIMEOUT 20
 ```
 
-Running the example above will create a service on the url
-<http://localhost/?request=getcapabilities&service=wms>
+Using `MS_ERRORFILE stderr` dumps the errors into supporting server.
 
-The ENV variables that can be set are the following
+NOTE: Implement light debug on prod
 
-```env
-DEBUG
-MIN_PROCS
-MAX_PROCS
-MAX_LOAD_PER_PROC
-IDLE_TIMEOUT
-MS_MAPFILE
+- ENV DEBUG 0
+- ENV MS_DEBUGLEVEL 0
 
-PROJ_LIB
+## Passing env variables to mapserver
+
+To pass any env variables to mapserver it is only possible to use `setenv.add-environment`, the default way using [bin-environment(https://redmine.lighttpd.net/boards/2/topics/3656), doesn't seem to work.
+
+For example passing S3 bucket env variables, to be used on mapserver as data source
+
+```bash
+# Mapserver: DATA "/vsis3/ws-obs/output/mapserver/soc_0-5cm_uncertainty_europe.tif"
+# using direct file access.
+$HTTP["url"] =~ "^/sld($|/)" { 
+    server.dir-listing = "enable"
+} else {
+    magnet.attract-raw-url-to = (env.LIGHT_CONF_DIR + "/filter-map.lua")
+    setenv.add-environment = ( 
+          "AWS_S3_ENDPOINT" => env.AWS_S3_ENDPOINT,
+          "AWS_DEFAULT_REGION" => env.AWS_DEFAULT_REGION,
+          "AWS_ACCESS_KEY_ID" => env.AWS_ACCESS_KEY_ID,
+          "AWS_SECRET_ACCESS_KEY" => env.AWS_SECRET_ACCESS_KEY )
+    fastcgi.server = (
+    "/" => (
+    "mapserver" => (
+      "socket" => "/tmp/mapserver-fastcgi.socket",
+      "check-local" => "disable",
+      "bin-path" => "/usr/local/bin/mapserv",
+      "min-procs" => env.MIN_PROCS,
+      "max-procs" => env.MAX_PROCS,
+      "max-load-per-proc" => env.MAX_LOAD_PER_PROC,
+      "idle-timeout" => env.IDLE_TIMEOUT
+    )
+  )
+)
 ```
 
-The ENV variables, with the exception of MS_MAPFILE have a default value set in
-the Dockerfile.
+## File content folder (e.g sld)
 
-The [GDAL](https://gdal.org/) PROJ_LIB env is default set with the value
-/usr/share/proj. For performance reasons one would like to set a custom PROJ_LIB
-containing a minimum of available EPSG codes. This can be done with the
-mentioned PROJ_LIB env.
+On [lightttpd.conf](etc/lighttpd.conf#L37) around line 37, we have the `server.dir-listing` implementation that will map the a `sld` request to the filesystem folder.
 
-```docker
-docker run -e DEBUG=0 -e MIN_PROCS=1 -e MAX_PROCS=3 -e MAX_LOAD_PER_PROC=4 \
-           -e IDLE_TIMEOUT=20 -e MS_MAPFILE=/srv/data/example.map --rm -d \
-           -p 80:80 --name mapserver-run-example -v `pwd`/example:/srv/data pdok/mapserver
+On local docker run with `example-volume`: `http://localhost:8080/sld`
+
+## Dynamic server deployment
+
+Mapserver reqeuires a `ows_onlineresource` parameter on `web > metadata` in order to advertise the proper service url on getcapabilities.
+You can hardcode the value on the mapfile, but it will change when you move the mapfile to alternate servers (in that case always use the prod service url).
+
+The image provides a mechanism to fetch the url (and mapfile) dynamically:
+
+Add this section to the mapfile:
+
+```mapfile
+WEB
+    VALIDATION
+      "ows_url" "(\b(https?|ftp|file)://)?[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]"
+    END
+    
+    METADATA
+      "ows_onlineresource"               "%ows_url%"
+    END
+END
 ```
 
-## Example
-
-When starting the container it will create a WMS & WFS service on the end-point
-
-```html
-http://localhost?
-```
-
-### Example request
-
-```html
-http://localhost/?request=getfeature&service=wfs&VERSION=2.0.0&typename=example:example&count=1
-```
-
-```html
-http://localhost/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&BBOX=50,2,54,9&CRS=EPSG:4326&WIDTH=905&HEIGHT=517&LAYERS=example&STYLES=&FORMAT=image/png&DPI=96&MAP_RESOLUTION=96&FORMAT_OPTIONS=dpi:96&TRANSPARENT=TRUE
-```
-
-```html
-http://localhost/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&BBOX=48.9306039592783506,0.48758765231731171,55.46504193821721884,12.33319204541738756&CRS=EPSG:4326&WIDTH=1530&HEIGHT=844&LAYERS=example&STYLES=&FORMAT=image/png&QUERY_LAYERS=example&INFO_FORMAT=text/html&I=389&J=537&FEATURE_COUNT=10
-```
-
-## Misc
-
-### Why Lighttpd
-
-In our previous configurations we would run NGINX, while this is a good web
-service and has a lot of configuration options, it runs with multiple processes.
-There for we needed supervisord for managing this, whereas Lighttpd runs as a
-single process. Also all the routing configuration options aren't needed,
-because that is handled by the infrastructure/platform, like
-[Kubernetes](https://kubernetes.io/). If one would like to configure some simple
-routing is still can be done in the lighttpd.conf.
-
-### How to Contribute
-
-Make a pull request...
-
-### Contact
-
-Contacting the maintainers can be done through the issue tracker.
-
-### Used examples
-
-* <https://github.com/srounet/docker-mapserver>
-* <https://github.com/Amsterdam/mapserver>
+The LUA url rewrite script will add &ows_url=, with the current request url as GET parameter to the request.

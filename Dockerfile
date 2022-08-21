@@ -1,8 +1,9 @@
-FROM debian:buster as builder
-LABEL maintainer="PDOK dev <https://github.com/PDOK/mapserver-docker/issues>"
-
+FROM debian:buster@sha256:66d2008f31f5ad6fdbe094fc7bb45315dc75687a10c611f64eeef2675051518e as builder
+# Note: This image will implement libproj13:amd64 5.2.0-1
 ENV DEBIAN_FRONTEND noninteractive
 ENV TZ Europe/Amsterdam
+ENV MS_VERSION rel-7-6-4
+ENV HARFBUZZ_VERSION 2.8.2
 
 RUN apt-get -y update && \
     apt-get install -y --no-install-recommends \
@@ -19,7 +20,6 @@ RUN apt-get -y update && \
         locales \
         make \
         patch \
-        openssh-server \
         protobuf-compiler \
         protobuf-c-compiler \
         software-properties-common \
@@ -27,8 +27,6 @@ RUN apt-get -y update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN update-locale LANG=C.UTF-8
-
-ENV HARFBUZZ_VERSION 2.8.2
 
 RUN cd /tmp && \
         wget https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz && \
@@ -64,12 +62,14 @@ RUN apt-get -y update && \
 
 RUN apt-get -y update --fix-missing
 
-RUN git clone --single-branch -b pdok-7-6-4-patch-5 https://github.com/pdok/mapserver/ /usr/local/src/mapserver
+RUN git clone --depth=1 --single-branch -b $MS_VERSION https://github.com/mapserver/mapserver/ /usr/local/src/mapserver
 
 RUN mkdir /usr/local/src/mapserver/build && \
     cd /usr/local/src/mapserver/build && \
     cmake ../ \
-        -DWITH_PROJ=ON \
+        -DCMAKE_C_FLAGS="-O2" \
+        -DCMAKE_CXX_FLAGS="-O2" \
+        -DWITH_XMLMAPFILE=OFF \
         -DWITH_KML=OFF \
         -DWITH_SOS=OFF \
         -DWITH_WMS=ON \
@@ -83,8 +83,6 @@ RUN mkdir /usr/local/src/mapserver/build && \
         -DWITH_FCGI=ON \
         -DWITH_GEOS=ON \
         -DWITH_POSTGIS=ON \
-        -DWITH_GDAL=ON \
-        -DWITH_OGR=ON \
         -DWITH_CURL=ON \
         -DWITH_CLIENT_WMS=ON \
         -DWITH_CLIENT_WFS=ON \
@@ -102,8 +100,6 @@ RUN mkdir /usr/local/src/mapserver/build && \
         -DWITH_ORACLESPATIAL=OFF \
         -DWITH_ORACLE_PLUGIN=OFF \
         -DWITH_MSSQL2008=OFF \
-        -DWITH_SDE_PLUGIN=OFF \
-        -DWITH_SDE=OFF \
         -DWITH_EXEMPI=ON \
         -DWITH_XMLMAPFILE=ON \
         -DWITH_V8=OFF \
@@ -118,14 +114,32 @@ RUN mkdir /usr/local/src/mapserver/build && \
     make install && \
     ldconfig
 
-FROM pdok/lighttpd:1.4.53-buster as service
-LABEL maintainer="PDOK dev <https://github.com/PDOK/mapserver-docker/issues>"
+FROM pdok/lighttpd:1.4.65-buster@sha256:4e17f4043110cd13c446447c50b5663c7f0c40799959bddf527911db1dd2dad0
+LABEL maintainer="ISRIC - World Soil Information"
 
 ENV DEBIAN_FRONTEND noninteractive
 ENV TZ Europe/Amsterdam
+ENV DEBUG 2
+ENV MS_DEBUGLEVEL 4
+ENV MS_ERRORFILE "stderr"
+
+ENV MIN_PROCS 1
+ENV MAX_PROCS 4
+ENV MAX_LOAD_PER_PROC 4
+ENV IDLE_TIMEOUT 20
+ENV LIGHT_CONF_DIR "/opt/lighttpd"
+ENV LIGHT_ROOT_DIR "/srv/data"
+
+EXPOSE 8080
+ENV TINI_VERSION v0.19.0
 
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /usr/local/lib /usr/local/lib
+
+USER root
+RUN echo 'deb http://deb.debian.org/debian buster contrib non-free'  >>  /etc/apt/sources.list
+RUN echo 'deb http://security.debian.org/debian-security buster/updates contrib non-free'  >>  /etc/apt/sources.list
+RUN echo 'deb http://deb.debian.org/debian buster-updates contrib non-free'  >>  /etc/apt/sources.list
 
 RUN apt-get -y update && \
     apt-get install -y --no-install-recommends \
@@ -148,23 +162,37 @@ RUN apt-get -y update && \
         librsvg2-2 \
         libprotobuf17 \
         libprotobuf-c1 \
+        fonts-opensymbol \
+# Note: ttf-mscorefonts-installer takes alot of time to install
+#        ttf-mscorefonts-installer \
         gettext-base \
         wget \
         gnupg && \
     rm -rf /var/lib/apt/lists/*
 
-COPY etc/lighttpd.conf /lighttpd.conf
-COPY etc/filter-map.lua /filter-map.lua
+# Install tini
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
+RUN chmod +x /tini
+
+RUN mkdir -p /opt/lighttpd/
+COPY etc/lighttpd.conf /opt/lighttpd/lighttpd.conf
+COPY etc/filter-map.lua /opt/lighttpd/filter-map.lua
+COPY etc/*.inc /opt/lighttpd/
+COPY etc/*.list /opt/lighttpd/
+RUN chown -R www-data:www-data  /opt/lighttpd/
+# Add some common missing projections 
+RUN echo '# Goode Homolosine\n<152160> +proj=igh +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0 <>'  >>  /usr/share/proj/epsg
+RUN echo '# LAEA for Africa\n<152161> +proj=laea +lat_0=5 +lon_0=20 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs <>'  >>  /usr/share/proj/epsg
+RUN echo '# Mollweide\n<54009> +proj=moll +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs <>'  >>  /usr/share/proj/epsg
+RUN echo '# Eckert IV projection\n<54012> +proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs <>'  >>  /usr/share/proj/epsg 
+RUN echo '# Google mercator\n<900913> +proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +over +nadgrids=@null +no_defs <>'  >>  /usr/share/proj/epsg 
 
 RUN chmod o+x /usr/local/bin/mapserv
 RUN apt-get clean
 
-ENV DEBUG 0
-ENV MIN_PROCS 1
-ENV MAX_PROCS 3
-ENV MAX_LOAD_PER_PROC 4
-ENV IDLE_TIMEOUT 20
+USER www-data
 
-EXPOSE 80
+EXPOSE 8080
 
-CMD ["lighttpd", "-D", "-f", "/lighttpd.conf"]
+ENTRYPOINT ["/tini","-g","--"]
+CMD /usr/local/sbin/lighttpd -D -f $LIGHT_CONF_DIR/lighttpd.conf
